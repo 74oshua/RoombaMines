@@ -1,94 +1,161 @@
 ﻿using BepInEx;
 using HarmonyLib;
 using GameNetcodeStuff;
+using Unity.Netcode;
+using System.Reflection;
+using System.Numerics;
+using UnityEngine;
+using UnityEngine.Networking;
+using System.Linq;
 
-namespace LethalCompanyCheatSuite
+namespace RoombaMines
 {
     [BepInPlugin(PluginInfo.PLUGIN_GUID, PluginInfo.PLUGIN_NAME, PluginInfo.PLUGIN_VERSION)]
     [BepInProcess("Lethal Company.exe")]
     public class Plugin : BaseUnityPlugin
     {
+        public static AssetBundle ModAssets;
+
         private void Awake()
         {
             // Plugin startup logic
             Logger.LogInfo($"Plugin {PluginInfo.PLUGIN_GUID} is loaded!");
+            Logger.LogInfo($"Embedded resources found:");
+            foreach (string s in GetType().Assembly.GetManifestResourceNames())
+            {
+                Logger.LogInfo($"{s}");
+            }
+
+            ModAssets = AssetBundle.LoadFromStream(Assembly.GetExecutingAssembly().GetManifestResourceStream("RoombaMines.ModAssets"));
+
+            // for UnityNetCodePatcher
+            NetcodePatcher();
 
             // patch
-            Harmony.CreateAndPatchAll(typeof(PlayerPatches));
-            Harmony.CreateAndPatchAll(typeof(ItemPatches));
+            Harmony.CreateAndPatchAll(typeof(NetworkObjectManager));
         }
-    }
 
-    public class PlayerPatches
-    {
-        // Emote2 speed hack
-        [HarmonyPatch(typeof(PlayerControllerB), "Emote2_performed")]
-        [HarmonyPrefix]
-        static void Emote2_performed(PlayerControllerB __instance)
+        private static void NetcodePatcher()
         {
-            UnityEngine.Debug.Log("Toggling movement speed from " + __instance.movementSpeed);
-            if (__instance.movementSpeed <= 4.6f)
+            var types = Assembly.GetExecutingAssembly().GetTypes();
+            foreach (var type in types)
             {
-                __instance.movementSpeed = 10f;
+                var methods = type.GetMethods(BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                foreach (var method in methods)
+                {
+                    var attributes = method.GetCustomAttributes(typeof(RuntimeInitializeOnLoadMethodAttribute), false);
+                    if (attributes.Length > 0)
+                    {
+                        method.Invoke(null, null);
+                    }
+                }
             }
-            else
+        }
+
+        public class NetworkObjectManager
+        {
+            static GameObject networkPrefab;
+
+            // load network prefab
+            [HarmonyPatch(typeof(GameNetworkManager), "Start")]
+            [HarmonyPostfix]
+            public static void Init()
             {
-                __instance.movementSpeed = 4.6f;
+                if (networkPrefab != null)
+                    return;
+
+                networkPrefab = (GameObject)ModAssets.LoadAsset("NetworkManager");
+                networkPrefab.AddComponent<Roomba>();
+
+                NetworkManager.Singleton.AddNetworkPrefab(networkPrefab);
             }
-            UnityEngine.Debug.Log("Speed is now " + __instance.movementSpeed);
-        }
 
-        // infinite sprint
-        [HarmonyPatch(typeof(PlayerControllerB), "LateUpdate")]
-        [HarmonyPostfix]
-        static void PlayerLateUpdatePostfix(PlayerControllerB __instance)
-        {
-            __instance.sprintMeter = 1f;
-        }
-
-        // infinite health
-        [HarmonyPatch(typeof(PlayerControllerB), "DamagePlayer")]
-        [HarmonyPrefix]
-        static void DamagePlayerPrefix(PlayerControllerB __instance)
-        {
-            __instance.health = 100;
-        }
-
-        // disable death
-        [HarmonyPatch(typeof(PlayerControllerB), "AllowPlayerDeath")]
-        [HarmonyPostfix]
-        static void AllowPlayerDeathPostfix(ref bool __result)
-        {
-            __result = false;
-        }
-
-        // disable turrets
-        [HarmonyPatch(typeof(Turret), "Update")]
-        [HarmonyPrefix]
-        static void TurretUpdatePrefix(Turret __instance)
-        {
-            __instance.turretActive = false;
-        }
-
-        // stunned enemies (only works on entities that use EnemyAI)
-        [HarmonyPatch(typeof(EnemyAI), "Update")]
-        [HarmonyPrefix]
-        static void EnemyLateUpdatePrefix(ref EnemyAI __instance)
-        {
-            __instance.SetEnemyStunned(true);
-        }
-    }
-
-    public class ItemPatches
-    {
-        // Infinite charge
-        [HarmonyPatch(typeof(GrabbableObject), "Update")]
-        [HarmonyPostfix]
-        static void GrabbableObjectUpdatePostfix(ref GrabbableObject __instance)
-        {
-            if (__instance.insertedBattery != null)
+            // spawn roomba object as child of landmine
+            [HarmonyPatch(typeof(Landmine), "Start")]
+            [HarmonyPostfix]
+            static void SpawnRoomba(Landmine __instance)
             {
-                __instance.insertedBattery.charge = 1f;
+                if (NetworkManager.Singleton.IsHost || NetworkManager.Singleton.IsServer)
+                {
+                    var roomba = Instantiate(networkPrefab, __instance.gameObject.transform.parent.position, __instance.gameObject.transform.parent.rotation);
+                    roomba.GetComponent<Roomba>().mine = __instance;
+                    roomba.GetComponent<NetworkObject>().Spawn();
+                    __instance.transform.parent.GetComponent<NetworkObject>().TrySetParent(roomba);
+                }
+            }
+        }
+
+        public class Roomba : NetworkBehaviour
+        {
+            public enum MovementState
+            {
+                Forward,
+                Rotate,
+                Stop
+            }
+
+            public MovementState state;
+            public Landmine mine;
+
+            private int _tick_timer = 0;
+            private readonly int _tick_length = 30;
+            private readonly float _move_rate = 0.5f;
+            private readonly float _rotate_rate = 20;
+            private readonly float _scale = 0.5f;
+
+            void Start()
+            {
+                state = MovementState.Rotate;
+                UnityEngine.Debug.Log("Spawned Roomba");
+            }
+
+            // tick for Roomba movement
+            void Update()
+            {
+                // return if not host
+                if (!(NetworkManager.Singleton.IsHost || NetworkManager.Singleton.IsServer) || mine.hasExploded)
+                {
+                    return;
+                }
+
+                if (state == MovementState.Forward)
+                {
+                    transform.position += transform.forward * Time.deltaTime * _move_rate;
+                }
+                else if (state == MovementState.Rotate)
+                {
+                    transform.Rotate(transform.up, Time.deltaTime * _rotate_rate);
+                }
+            }
+
+            // physics tick for Roomba
+            void FixedUpdate()
+            {
+                // return if not host
+                if (!(NetworkManager.Singleton.IsHost || NetworkManager.Singleton.IsServer) || mine.hasExploded)
+                {
+                    return;
+                }
+
+                _tick_timer += 1;
+                if (_tick_timer >= _tick_length)
+                {
+                    _tick_timer = 0;
+
+                    bool left_clear = !Physics.Raycast(transform.position - transform.right * _scale, transform.forward, 1);
+                    bool right_clear = !Physics.Raycast(transform.position + transform.right * _scale, transform.forward, 1);
+                    bool left_grounded = Physics.Raycast(transform.position + transform.forward * _scale - transform.right * _scale, -transform.up, 1);
+                    bool right_grounded = Physics.Raycast(transform.position + transform.forward * _scale + transform.right * _scale, -transform.up, 1);
+
+                    if (right_clear && left_clear && left_grounded && right_grounded)
+                    {
+                        state = MovementState.Forward;
+                    }
+                    else
+                    {
+                        state = MovementState.Rotate;
+                    }
+                }
             }
         }
     }

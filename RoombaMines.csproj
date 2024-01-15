@@ -1,13 +1,21 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net46</TargetFramework>
-    <AssemblyName>LethalCompanyCheatSuite</AssemblyName>
-    <Description>Lethal Company Cheat Suite</Description>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>RoombaMines</AssemblyName>
+    <Description>Mines move around like Roombas</Description>
     <Version>1.0.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="ModAssets" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="ModAssets" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="BepInEx.Analyzers" Version="1.*" PrivateAssets="all" />
@@ -35,17 +43,38 @@
     <Reference Include="UnityEngine.PhysicsModule">
       <HintPath>lib/UnityEngine.PhysicsModule.dll</HintPath>
     </Reference>
-    <Reference Include="UnityEngine.AudioModule">
-      <HintPath>lib/UnityEngine.AudioModule.dll</HintPath>
-    </Reference>
-    <Reference Include="UnityEngine.AnimationModule">
-      <HintPath>lib/UnityEngine.AnimationModule.dll</HintPath>
+    <Reference Include="UnityEngine.AssetBundleModule">
+      <HintPath>lib/UnityEngine.AssetBundleModule.dll</HintPath>
     </Reference>
   </ItemGroup>
-
+  
   <ItemGroup>
     <Reference Include="Assembly-CSharp">
       <HintPath>lib/Assembly-CSharp.dll</HintPath>
     </Reference>
   </ItemGroup>
+  
+  <ItemGroup>
+    <Compile Update="Properties\Resources.Designer.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Resources.resx</DependentUpon>
+    </Compile>
+  </ItemGroup>
+  
+  <ItemGroup>
+    <EmbeddedResource Update="Properties\Resources.resx">
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+  </ItemGroup>
+  
+  <ItemGroup>
+    <Folder Include="bin\Debug\net48\" />
+  </ItemGroup>
+
+  <Target Name="NetcodePatch" AfterTargets="PostBuildEvent">
+    <Exec Command="netcode-patch &quot;$(TargetPath)&quot; @(ReferencePathWithRefAssemblies->'&quot;%(Identity)&quot;', ' ')" />
+  </Target>
+  
 </Project>
