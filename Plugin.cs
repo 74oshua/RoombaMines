@@ -26,7 +26,7 @@ namespace RoombaMines
         public static ConfigEntry<int> roombaUpdateTickLength;
         public static ConfigEntry<bool> roombaAllowRotateLeft;
         public static List<string> roombaNames;
-        public static string roombaNameFilePath = "BepInEx/config/roomba_names.txt";
+        public static string roombaNameFilePath = Application.persistentDataPath + "/roomba_names.txt";
 
         private void Awake()
         {
