@@ -7,6 +7,10 @@ using System.Numerics;
 using UnityEngine;
 using UnityEngine.Networking;
 using System.Linq;
+using BepInEx.Configuration;
+using System.Collections.Generic;
+using System;
+using System.IO;
 
 namespace RoombaMines
 {
@@ -15,6 +19,14 @@ namespace RoombaMines
     public class Plugin : BaseUnityPlugin
     {
         public static AssetBundle ModAssets;
+
+        // config options
+        public static ConfigEntry<float> roombaMoveSpeed;
+        public static ConfigEntry<float> roombaTurnSpeed;
+        public static ConfigEntry<int> roombaUpdateTickLength;
+        public static ConfigEntry<bool> roombaAllowRotateLeft;
+        public static List<string> roombaNames;
+        public static string roombaNameFilePath = "BepInEx/config/roomba_names.txt";
 
         private void Awake()
         {
@@ -26,7 +38,34 @@ namespace RoombaMines
                 Logger.LogInfo($"{s}");
             }
 
+            // load assets from asset bundle
             ModAssets = AssetBundle.LoadFromStream(Assembly.GetExecutingAssembly().GetManifestResourceStream("RoombaMines.ModAssets"));
+
+            // load config
+            roombaMoveSpeed = Config.Bind("Behavior",
+                                        "RoombaMoveSpeed",
+                                        0.5f,
+                                        "Speed of the Roomba when moving forward (measured in m/s)\nNote: Roomba behavior can only be affected by the host. These settings do nothing for the clients.");
+            roombaTurnSpeed = Config.Bind("Behavior",
+                                        "RoombaTurnSpeed",
+                                        50f,
+                                        "How quickly the Roomba will rotate when it's hit a wall (measured in degrees/s)");
+            roombaUpdateTickLength = Config.Bind("Behavior",
+                                                "RoombaUpdateTickLength",
+                                                30,
+                                                "Roombas check for obstructions at the beginning of every tick, this determines how long those ticks last (measured in 1/60ths of a second)");
+            roombaAllowRotateLeft = Config.Bind("Behavior",
+                                                "RoombaAllowRotateLeft",
+                                                true,
+                                                "If true, Roombas will turn left 50% of the time, otherwise they will always turn right");
+
+            if (!File.Exists(roombaNameFilePath))
+            {
+                StreamWriter writeStream = new StreamWriter(roombaNameFilePath);
+                writeStream.Write("John\nGeorge\nPaul\nRingo\nHenry\nWilliam\nJoshua\nSam\nFred\nVinny\nRoss\nJoey");
+                writeStream.Close();
+            }
+            roombaNames = new List<string>(File.ReadAllText(roombaNameFilePath).Split("\n"));
 
             // for UnityNetCodePatcher
             NetcodePatcher();
@@ -77,8 +116,12 @@ namespace RoombaMines
             {
                 if (NetworkManager.Singleton.IsHost || NetworkManager.Singleton.IsServer)
                 {
+
+                    // spawn Roomba
                     var roomba = Instantiate(networkPrefab, __instance.gameObject.transform.parent.position, __instance.gameObject.transform.parent.rotation);
                     roomba.GetComponent<Roomba>().mine = __instance;
+                    // give Roomba a random name
+                    roomba.GetComponent<Roomba>().scanName = roombaNames[UnityEngine.Random.Range(0, roombaNames.Count)];
                     roomba.GetComponent<NetworkObject>().Spawn();
                     __instance.transform.parent.GetComponent<NetworkObject>().TrySetParent(roomba);
                 }
@@ -90,23 +133,40 @@ namespace RoombaMines
             public enum MovementState
             {
                 Forward,
-                Rotate,
+                RotateRight,
+                RotateLeft,
                 Stop
             }
 
             public MovementState state;
             public Landmine mine;
+            public string scanName = "Roomba";
 
             private int _tick_timer = 0;
-            private readonly int _tick_length = 30;
-            private readonly float _move_rate = 0.5f;
-            private readonly float _rotate_rate = 20;
-            private readonly float _scale = 0.5f;
+            private int _tick_length = roombaUpdateTickLength.Value;
+            private float _fixed_tick_time = 0;
+            private float _move_rate = roombaMoveSpeed.Value;
+            private float _rotate_rate = roombaTurnSpeed.Value;
+            private readonly float _scale = 0.55f;
+            private int _mask = LayerMask.GetMask("Default") | LayerMask.GetMask("Room") | LayerMask.GetMask("InteractableObject") | LayerMask.GetMask("Colliders");
 
             void Start()
             {
-                state = MovementState.Rotate;
+                state = MovementState.RotateRight;
                 UnityEngine.Debug.Log("Spawned Roomba");
+
+                _fixed_tick_time = Time.fixedDeltaTime * _tick_length;
+            }
+
+            public override void OnNetworkSpawn()
+            {
+                base.OnNetworkSpawn();
+
+                // set scannode to show new name
+                mine.transform.parent.GetComponentInChildren<ScanNodeProperties>().headerText = scanName;
+
+                // increase height of the mesh slightly
+                mine.transform.localScale = new UnityEngine.Vector3(1, 1, 1.1f);
             }
 
             // tick for Roomba movement
@@ -122,9 +182,13 @@ namespace RoombaMines
                 {
                     transform.position += transform.forward * Time.deltaTime * _move_rate;
                 }
-                else if (state == MovementState.Rotate)
+                else if (state == MovementState.RotateRight)
                 {
                     transform.Rotate(transform.up, Time.deltaTime * _rotate_rate);
+                }
+                else if (state == MovementState.RotateLeft)
+                {
+                    transform.Rotate(-transform.up, Time.deltaTime * _rotate_rate);
                 }
             }
 
@@ -137,23 +201,32 @@ namespace RoombaMines
                     return;
                 }
 
+                float fixed_tick_time = _tick_length * Time.fixedDeltaTime;
                 _tick_timer += 1;
                 if (_tick_timer >= _tick_length)
                 {
                     _tick_timer = 0;
 
-                    bool left_clear = !Physics.Raycast(transform.position - transform.right * _scale, transform.forward, 1);
-                    bool right_clear = !Physics.Raycast(transform.position + transform.right * _scale, transform.forward, 1);
-                    bool left_grounded = Physics.Raycast(transform.position + transform.forward * _scale - transform.right * _scale, -transform.up, 1);
-                    bool right_grounded = Physics.Raycast(transform.position + transform.forward * _scale + transform.right * _scale, -transform.up, 1);
+                    bool left_clear = !Physics.Raycast(transform.position - transform.right * _scale, transform.forward, _scale + _fixed_tick_time * _move_rate, _mask, QueryTriggerInteraction.Ignore);
+                    bool right_clear = !Physics.Raycast(transform.position + transform.right * _scale, transform.forward, _scale + _fixed_tick_time * _move_rate, _mask, QueryTriggerInteraction.Ignore);
+                    bool center_clear = !Physics.Raycast(transform.position + transform.forward * _scale, transform.forward, _fixed_tick_time * _move_rate, _mask, QueryTriggerInteraction.Ignore);
+                    bool left_grounded = Physics.Raycast(transform.position + transform.forward * _scale - transform.right * _scale, -transform.up, 0.1f, _mask, QueryTriggerInteraction.Ignore);
+                    bool right_grounded = Physics.Raycast(transform.position + transform.forward * _scale + transform.right * _scale, -transform.up, 0.1f, _mask, QueryTriggerInteraction.Ignore);
 
-                    if (right_clear && left_clear && left_grounded && right_grounded)
+                    if (center_clear && left_clear && right_clear && left_grounded && right_grounded)
                     {
                         state = MovementState.Forward;
                     }
-                    else
+                    else if (state == MovementState.Forward)
                     {
-                        state = MovementState.Rotate;
+                        if (!roombaAllowRotateLeft.Value || UnityEngine.Random.Range(0, 2) == 0)
+                        {
+                            state = MovementState.RotateRight;
+                        }
+                        else
+                        {
+                            state = MovementState.RotateLeft;
+                        }
                     }
                 }
             }
