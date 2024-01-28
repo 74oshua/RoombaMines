@@ -95,7 +95,7 @@ namespace RoombaMines
         {
             static GameObject networkPrefab;
 
-            // load network prefab
+            // load Roomba prefab
             [HarmonyPatch(typeof(GameNetworkManager), "Start")]
             [HarmonyPostfix]
             public static void Init()
@@ -109,7 +109,7 @@ namespace RoombaMines
                 NetworkManager.Singleton.AddNetworkPrefab(networkPrefab);
             }
 
-            // spawn roomba object as child of landmine
+            // spawn Roomba object as parent of landmine
             [HarmonyPatch(typeof(Landmine), "Start")]
             [HarmonyPostfix]
             static void SpawnRoomba(Landmine __instance)
@@ -134,8 +134,7 @@ namespace RoombaMines
             {
                 Forward,
                 RotateRight,
-                RotateLeft,
-                Stop
+                RotateLeft
             }
 
             public MovementState state;
@@ -148,7 +147,7 @@ namespace RoombaMines
             private float _move_rate = roombaMoveSpeed.Value;
             private float _rotate_rate = roombaTurnSpeed.Value;
             private readonly float _scale = 0.55f;
-            private int _mask = LayerMask.GetMask("Default") | LayerMask.GetMask("Room") | LayerMask.GetMask("InteractableObject") | LayerMask.GetMask("Colliders");
+            private int _mask = StartOfRound.Instance.allPlayersCollideWithMask;
 
             void Start()
             {
@@ -201,19 +200,23 @@ namespace RoombaMines
                     return;
                 }
 
-                float fixed_tick_time = _tick_length * Time.fixedDeltaTime;
                 _tick_timer += 1;
                 if (_tick_timer >= _tick_length)
                 {
                     _tick_timer = 0;
 
-                    bool left_clear = !Physics.Raycast(transform.position - transform.right * _scale, transform.forward, _scale + _fixed_tick_time * _move_rate, _mask, QueryTriggerInteraction.Ignore);
-                    bool right_clear = !Physics.Raycast(transform.position + transform.right * _scale, transform.forward, _scale + _fixed_tick_time * _move_rate, _mask, QueryTriggerInteraction.Ignore);
-                    bool center_clear = !Physics.Raycast(transform.position + transform.forward * _scale, transform.forward, _fixed_tick_time * _move_rate, _mask, QueryTriggerInteraction.Ignore);
-                    bool left_grounded = Physics.Raycast(transform.position + transform.forward * _scale - transform.right * _scale, -transform.up, 0.1f, _mask, QueryTriggerInteraction.Ignore);
-                    bool right_grounded = Physics.Raycast(transform.position + transform.forward * _scale + transform.right * _scale, -transform.up, 0.1f, _mask, QueryTriggerInteraction.Ignore);
+                    // if mine spawns in the air somehow, put it on the nearest surface below it
+                    if (!Physics.Raycast(transform.position, -transform.up, 0.1f, _mask, QueryTriggerInteraction.Ignore))
+                    {
+                        RaycastHit hit;
+                        Physics.Raycast(transform.position, -transform.up, out hit, 50f, _mask, QueryTriggerInteraction.Ignore);
+                        transform.position = hit.point;
+                    }
 
-                    if (center_clear && left_clear && right_clear && left_grounded && right_grounded)
+                    bool forward_clear = !Physics.CheckBox(transform.position + transform.forward * (_scale + _fixed_tick_time * _move_rate / 2), new UnityEngine.Vector3(_scale, 0.01f, _fixed_tick_time * _move_rate / 2), transform.rotation, _mask, QueryTriggerInteraction.Ignore);
+                    bool grounded = Physics.Raycast(transform.position + transform.forward * (_scale + _fixed_tick_time * _move_rate), -transform.up, 0.1f, _mask, QueryTriggerInteraction.Ignore);
+
+                    if (forward_clear && grounded)
                     {
                         state = MovementState.Forward;
                     }
