@@ -59,15 +59,5 @@ namespace RoombaMines.Properties {
                 resourceCulture = value;
             }
         }
-        
-        /// <summary>
-        ///   Looks up a localized resource of type System.Byte[].
-        /// </summary>
-        internal static byte[] ModAssets {
-            get {
-                object obj = ResourceManager.GetObject("ModAssets", resourceCulture);
-                return ((byte[])(obj));
-            }
-        }
     }
 }

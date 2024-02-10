@@ -9,8 +9,11 @@ using UnityEngine.Networking;
 using System.Linq;
 using BepInEx.Configuration;
 using System.Collections.Generic;
-using System;
 using System.IO;
+using Unity.Netcode.Components;
+using Unity.Collections;
+using static System.Net.Mime.MediaTypeNames;
+using System.Runtime.Remoting.Metadata.W3cXsd2001;
 
 namespace RoombaMines
 {
@@ -26,7 +29,7 @@ namespace RoombaMines
         public static ConfigEntry<int> roombaUpdateTickLength;
         public static ConfigEntry<bool> roombaAllowRotateLeft;
         public static List<string> roombaNames;
-        public static string roombaNameFilePath = Application.persistentDataPath + "/roomba_names.txt";
+        public static string roombaNameFilePath = UnityEngine.Application.persistentDataPath + "/roomba_names.txt";
 
         private void Awake()
         {
@@ -37,9 +40,6 @@ namespace RoombaMines
             {
                 Logger.LogInfo($"{s}");
             }
-
-            // load assets from asset bundle
-            ModAssets = AssetBundle.LoadFromStream(Assembly.GetExecutingAssembly().GetManifestResourceStream("RoombaMines.ModAssets"));
 
             // load config
             roombaMoveSpeed = Config.Bind("Behavior",
@@ -56,9 +56,10 @@ namespace RoombaMines
                                                 "Roombas check for obstructions at the beginning of every tick, this determines how long those ticks last (measured in 1/60ths of a second)");
             roombaAllowRotateLeft = Config.Bind("Behavior",
                                                 "RoombaAllowRotateLeft",
-                                                true,
+                                                false,
                                                 "If true, Roombas will turn left 50% of the time, otherwise they will always turn right");
 
+            // load or create roomba name file
             if (!File.Exists(roombaNameFilePath))
             {
                 StreamWriter writeStream = new StreamWriter(roombaNameFilePath);
@@ -93,38 +94,48 @@ namespace RoombaMines
 
         public class NetworkObjectManager
         {
-            static GameObject networkPrefab;
+            public static GameObject roombaPrefab;
+            public static int mineIndex = 0;
 
             // load Roomba prefab
             [HarmonyPatch(typeof(GameNetworkManager), "Start")]
             [HarmonyPostfix]
             public static void Init()
             {
-                if (networkPrefab != null)
-                    return;
-
-                networkPrefab = (GameObject)ModAssets.LoadAsset("NetworkManager");
-                networkPrefab.AddComponent<Roomba>();
-
-                NetworkManager.Singleton.AddNetworkPrefab(networkPrefab);
+                // allow adding prefabs at runtime
+                NetworkManager.Singleton.NetworkConfig.ForceSamePrefabs = false;
             }
 
-            // spawn Roomba object as parent of landmine
-            [HarmonyPatch(typeof(Landmine), "Start")]
+            // overwrite landmine prefab in current level
+            [HarmonyPatch(typeof(RoundManager), "Start")]
             [HarmonyPostfix]
-            static void SpawnRoomba(Landmine __instance)
+            public static void MinePrefabPatch()
             {
-                if (NetworkManager.Singleton.IsHost || NetworkManager.Singleton.IsServer)
+                if (roombaPrefab == null)
                 {
+                    // get a landmine prefab from the RoundManager
+                    for (mineIndex = 0; mineIndex < RoundManager.Instance.spawnableMapObjects.Length; mineIndex++)
+                    {
+                        if (RoundManager.Instance.spawnableMapObjects[mineIndex].prefabToSpawn.GetComponentInChildren<Landmine>())
+                        {
+                            roombaPrefab = RoundManager.Instance.spawnableMapObjects[mineIndex].prefabToSpawn;
+                            break;
+                        }
+                    }
 
-                    // spawn Roomba
-                    var roomba = Instantiate(networkPrefab, __instance.gameObject.transform.parent.position, __instance.gameObject.transform.parent.rotation);
-                    roomba.GetComponent<Roomba>().mine = __instance;
-                    // give Roomba a random name
-                    roomba.GetComponent<Roomba>().scanName = roombaNames[UnityEngine.Random.Range(0, roombaNames.Count)];
-                    roomba.GetComponent<NetworkObject>().Spawn();
-                    __instance.transform.parent.GetComponent<NetworkObject>().TrySetParent(roomba);
+                    // add relevant components to prefab
+                    roombaPrefab.AddComponent<NetworkTransform>();
+                    roombaPrefab.AddComponent<Roomba>();
+
+                    // unregister old landmine prefab
+                    NetworkManager.Singleton.RemoveNetworkPrefab(roombaPrefab);
+
+                    // register modified landmine as new network prefab
+                    NetworkManager.Singleton.AddNetworkPrefab(roombaPrefab);
                 }
+
+                // replace landmine prefab in current level with new one
+                RoundManager.Instance.spawnableMapObjects[mineIndex].prefabToSpawn = roombaPrefab;
             }
         }
 
@@ -139,7 +150,7 @@ namespace RoombaMines
 
             public MovementState state;
             public Landmine mine;
-            public string scanName = "Roomba";
+            public string scanName;
 
             private int _tick_timer = 0;
             private int _tick_length = roombaUpdateTickLength.Value;
@@ -161,17 +172,50 @@ namespace RoombaMines
             {
                 base.OnNetworkSpawn();
 
-                // set scannode to show new name
-                mine.transform.parent.GetComponentInChildren<ScanNodeProperties>().headerText = scanName;
+                mine = gameObject.GetComponentInChildren<Landmine>();
 
                 // increase height of the mesh slightly
                 mine.transform.localScale = new UnityEngine.Vector3(1, 1, 1.1f);
+
+                // set roomba name if host
+                if (NetworkManager.Singleton.IsHost || NetworkManager.Singleton.IsServer)
+                {
+                    SetNameServerRPC(roombaNames[UnityEngine.Random.Range(0, roombaNames.Count)]);
+                }
+            }
+
+            [ServerRpc(RequireOwnership = false)]
+            public void SetNameServerRPC(string newName)
+            {
+                if (!(NetworkManager.Singleton.IsHost || NetworkManager.Singleton.IsServer))
+                {
+                    return;
+                }
+                UnityEngine.Debug.Log("Host: Set Roomba name: " + newName);
+
+                SetNameClientRPC(newName);
+            }
+
+            [ClientRpc]
+            public void SetNameClientRPC(string newName)
+            {
+                UnityEngine.Debug.Log("Client: Set Roomba name: " + newName);
+
+                // set scannode to show new name
+                scanName = newName;
+                mine.transform.parent.GetComponentInChildren<ScanNodeProperties>().headerText = scanName;
             }
 
             // tick for Roomba movement
             void Update()
             {
-                // return if not host
+                if (!mine.enabled)
+                {
+                    Destroy(gameObject);
+                    return;
+                }
+
+                // return if not host or mine is inactive
                 if (!(NetworkManager.Singleton.IsHost || NetworkManager.Singleton.IsServer) || mine.hasExploded)
                 {
                     return;
@@ -194,7 +238,7 @@ namespace RoombaMines
             // physics tick for Roomba
             void FixedUpdate()
             {
-                // return if not host
+                // return if not host or mine is inactive
                 if (!(NetworkManager.Singleton.IsHost || NetworkManager.Singleton.IsServer) || mine.hasExploded)
                 {
                     return;
@@ -209,8 +253,10 @@ namespace RoombaMines
                     if (!Physics.Raycast(transform.position, -transform.up, 0.1f, _mask, QueryTriggerInteraction.Ignore))
                     {
                         RaycastHit hit;
-                        Physics.Raycast(transform.position, -transform.up, out hit, 50f, _mask, QueryTriggerInteraction.Ignore);
-                        transform.position = hit.point;
+                        if (Physics.Raycast(transform.position, -transform.up, out hit, 5f, _mask, QueryTriggerInteraction.Ignore))
+                        {
+                            transform.position = hit.point;
+                        }
                     }
 
                     bool forward_clear = !Physics.CheckBox(transform.position + transform.forward * (_scale + _fixed_tick_time * _move_rate / 2), new UnityEngine.Vector3(_scale, 0.01f, _fixed_tick_time * _move_rate / 2), transform.rotation, _mask, QueryTriggerInteraction.Ignore);
