@@ -1,19 +1,13 @@
 ﻿using BepInEx;
 using HarmonyLib;
-using GameNetcodeStuff;
 using Unity.Netcode;
 using System.Reflection;
-using System.Numerics;
 using UnityEngine;
-using UnityEngine.Networking;
-using System.Linq;
 using BepInEx.Configuration;
 using System.Collections.Generic;
 using System.IO;
 using Unity.Netcode.Components;
-using Unity.Collections;
-using static System.Net.Mime.MediaTypeNames;
-using System.Runtime.Remoting.Metadata.W3cXsd2001;
+using GameNetcodeStuff;
 
 namespace RoombaMines
 {
@@ -128,7 +122,7 @@ namespace RoombaMines
                     roombaPrefab.AddComponent<Roomba>();
 
                     // unregister old landmine prefab
-                    NetworkManager.Singleton.RemoveNetworkPrefab(roombaPrefab);
+                    NetworkManager.Singleton.RemoveNetworkPrefab(RoundManager.Instance.spawnableMapObjects[mineIndex].prefabToSpawn);
 
                     // register modified landmine as new network prefab
                     NetworkManager.Singleton.AddNetworkPrefab(roombaPrefab);
@@ -143,6 +137,7 @@ namespace RoombaMines
         {
             public enum MovementState
             {
+                Idle,
                 Forward,
                 RotateRight,
                 RotateLeft
@@ -160,10 +155,22 @@ namespace RoombaMines
             private readonly float _scale = 0.55f;
             private int _mask = StartOfRound.Instance.allPlayersCollideWithMask;
 
+            void Awake()
+            {
+                // check if mine is above ground (outside)
+                if (transform.position.y > -50)
+                {
+                    // disable this component
+                    enabled = false;
+                    return;
+                }
+            }
+
             void Start()
             {
                 state = MovementState.RotateRight;
-                UnityEngine.Debug.Log("Spawned Roomba");
+                UnityEngine.Debug.Log("Roomba at position: " + transform.position);
+                UnityEngine.Debug.Log("Player at position: " + StartOfRound.Instance.localPlayerController.transform.position);
 
                 _fixed_tick_time = Time.fixedDeltaTime * _tick_length;
             }
