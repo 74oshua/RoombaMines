@@ -22,6 +22,7 @@ namespace RoombaMines
         public static ConfigEntry<float> roombaTurnSpeed;
         public static ConfigEntry<int> roombaUpdateTickLength;
         public static ConfigEntry<bool> roombaAllowRotateLeft;
+        public static ConfigEntry<float> mineBecomesRoombaChance;
         public static List<string> roombaNames;
         public static string roombaNameFilePath = UnityEngine.Application.persistentDataPath + "/roomba_names.txt";
 
@@ -52,6 +53,10 @@ namespace RoombaMines
                                                 "RoombaAllowRotateLeft",
                                                 false,
                                                 "If true, Roombas will turn left 50% of the time, otherwise they will always turn right");
+            mineBecomesRoombaChance = Config.Bind("Behavior",
+                                        "MineBecomesRoombaChance",
+                                        1.0f,
+                                        "The probability a mine will behave like a Roomba after it's spawned. A value of 1.0 will result in every mine becoming a Roomba, a value of 0.0 will effectively disable the mod, 0.5 will result in half normal mines, etc.");
 
             // load or create roomba name file
             if (!File.Exists(roombaNameFilePath))
@@ -153,17 +158,30 @@ namespace RoombaMines
             private float _move_rate = roombaMoveSpeed.Value;
             private float _rotate_rate = roombaTurnSpeed.Value;
             private readonly float _scale = 0.55f;
+            private readonly float _scale_vert = 0.2f;
             private int _mask = StartOfRound.Instance.allPlayersCollideWithMask;
 
             void Awake()
             {
-                // check if mine is above ground (outside)
-                if (transform.position.y > -50)
+                // check if mine is above ground (outside) or whether this mine should behave normally
+                if (transform.position.y > -50 || Random.Range(0f, 1f) > mineBecomesRoombaChance.Value)
                 {
-                    // disable this component
+                    // disable roomba behavior
                     enabled = false;
                     return;
                 }
+
+                // if the roomba is clipped in a wall, move away from it
+                RaycastHit hit;
+                if (Physics.Raycast(transform.position, transform.forward, out hit, _scale * 1.42f, _mask & ~(1 << 21))
+                    || Physics.Raycast(transform.position, -transform.forward, out hit, _scale * 1.42f, _mask & ~(1 << 21))
+                    || Physics.Raycast(transform.position, transform.right, out hit, _scale * 1.42f, _mask & ~(1 << 21))
+                    || Physics.Raycast(transform.position, -transform.right, out hit, _scale * 1.42f, _mask & ~(1 << 21)))
+                {
+                    Vector3 new_pos = hit.point + hit.normal * _scale * 2;
+                    transform.position = new_pos;
+                }
+
             }
 
             void Start()
@@ -263,10 +281,11 @@ namespace RoombaMines
                         if (Physics.Raycast(transform.position, -transform.up, out hit, 5f, _mask, QueryTriggerInteraction.Ignore))
                         {
                             transform.position = hit.point;
+                            UnityEngine.Debug.Log("Moving mine to Y coord " + transform.position.y);
                         }
                     }
 
-                    bool forward_clear = !Physics.CheckBox(transform.position + transform.forward * (_scale + _fixed_tick_time * _move_rate / 2), new UnityEngine.Vector3(_scale, 0.01f, _fixed_tick_time * _move_rate / 2), transform.rotation, _mask, QueryTriggerInteraction.Ignore);
+                    bool forward_clear = !Physics.CheckBox(transform.position + transform.forward * (_scale + _fixed_tick_time * _move_rate / 2) + transform.up * 0.01f, new UnityEngine.Vector3(_scale, 0.005f, _fixed_tick_time * _move_rate / 2), transform.rotation, _mask, QueryTriggerInteraction.Ignore);
                     bool grounded = Physics.Raycast(transform.position + transform.forward * (_scale + _fixed_tick_time * _move_rate), -transform.up, 0.1f, _mask, QueryTriggerInteraction.Ignore);
 
                     if (forward_clear && grounded)
