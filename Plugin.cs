@@ -106,18 +106,18 @@ namespace RoombaMines
             }
 
             // overwrite landmine prefab in current level
-            [HarmonyPatch(typeof(RoundManager), "Start")]
-            [HarmonyPostfix]
-            public static void MinePrefabPatch()
+            [HarmonyPatch(typeof(RoundManager), "SpawnMapObjects")]
+            [HarmonyPrefix]
+            public static void MinePrefabPatch(RoundManager __instance)
             {
                 if (roombaPrefab == null)
                 {
                     // get a landmine prefab from the RoundManager
-                    for (mineIndex = 0; mineIndex < RoundManager.Instance.spawnableMapObjects.Length; mineIndex++)
+                    for (mineIndex = 0; mineIndex < __instance.currentLevel.spawnableMapObjects.Length; mineIndex++)
                     {
-                        if (RoundManager.Instance.spawnableMapObjects[mineIndex].prefabToSpawn.GetComponentInChildren<Landmine>())
+                        if (__instance.currentLevel.spawnableMapObjects[mineIndex].prefabToSpawn.GetComponentInChildren<Landmine>())
                         {
-                            roombaPrefab = RoundManager.Instance.spawnableMapObjects[mineIndex].prefabToSpawn;
+                            roombaPrefab = __instance.currentLevel.spawnableMapObjects[mineIndex].prefabToSpawn;
                             break;
                         }
                     }
@@ -127,14 +127,14 @@ namespace RoombaMines
                     roombaPrefab.AddComponent<Roomba>();
 
                     // unregister old landmine prefab
-                    NetworkManager.Singleton.RemoveNetworkPrefab(RoundManager.Instance.spawnableMapObjects[mineIndex].prefabToSpawn);
+                    NetworkManager.Singleton.RemoveNetworkPrefab(__instance.currentLevel.spawnableMapObjects[mineIndex].prefabToSpawn);
 
                     // register modified landmine as new network prefab
                     NetworkManager.Singleton.AddNetworkPrefab(roombaPrefab);
                 }
 
                 // replace landmine prefab in current level with new one
-                RoundManager.Instance.spawnableMapObjects[mineIndex].prefabToSpawn = roombaPrefab;
+                __instance.currentLevel.spawnableMapObjects[mineIndex].prefabToSpawn = roombaPrefab;
             }
         }
 
@@ -188,7 +188,6 @@ namespace RoombaMines
             {
                 state = MovementState.RotateRight;
                 UnityEngine.Debug.Log("Roomba at position: " + transform.position);
-                UnityEngine.Debug.Log("Player at position: " + StartOfRound.Instance.localPlayerController.transform.position);
 
                 _fixed_tick_time = Time.fixedDeltaTime * _tick_length;
             }
